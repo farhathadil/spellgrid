@@ -1,0 +1,15 @@
+[Unit]
+Description=SpellGrid - Hiriya School Spelling Bee 2026
+After=network.target
+
+[Service]
+Type=simple
+User=faa
+WorkingDirectory=/home/faa/sb2/spellgrid
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/usr/bin/python3 /home/faa/sb2/spellgrid/app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
