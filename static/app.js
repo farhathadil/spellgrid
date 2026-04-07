@@ -46,8 +46,8 @@ const App = {
             <select class="input" id="username" required>
               <option value="">Select user...</option>
               <option value="admin">Admin</option>
-              <option value="student1">Student One</option>
-              <option value="student2">Student Two</option>
+              <option value="Fuzail">Fuzail</option>
+              <option value="Mammi">Mammi</option>
               <option value="test">Test</option>
             </select>
           </div>
