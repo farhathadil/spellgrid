@@ -53,7 +53,7 @@ const App = {
           </div>
           <div>
             <label class="label">PIN</label>
-            <input type="password" class="input" id="pin" maxlength="4" required>
+            <input type="password" class="input" id="pin" maxlength="20" required>
           </div>
           <button type="submit" class="btn btn-cyan">ENTER</button>
         </form>
@@ -139,19 +139,19 @@ const App = {
           <div class="ex-grid">
             <div class="ex-item" onclick="App.startExercise('match')">
               <div class="ex-item-title">🔗 Match the Meaning</div>
-              <div class="ex-item-sub">${this.completedExercises[this.currentStage]?.match ? '✓ Complete' : 'Not started'}</div>
+              <div class="ex-item-sub">${this.exerciseStatusText('match')}</div>
             </div>
             <div class="ex-item" onclick="App.startExercise('jumble')">
               <div class="ex-item-title">🔀 Jumbled Word</div>
-              <div class="ex-item-sub">${this.completedExercises[this.currentStage]?.jumble ? '✓ Complete' : 'Not started'}</div>
+              <div class="ex-item-sub">${this.exerciseStatusText('jumble')}</div>
             </div>
             <div class="ex-item" onclick="App.startExercise('fill')">
               <div class="ex-item-title">✏️ Fill the Letters</div>
-              <div class="ex-item-sub">${this.completedExercises[this.currentStage]?.fill ? '✓ Complete' : 'Not started'}</div>
+              <div class="ex-item-sub">${this.exerciseStatusText('fill')}</div>
             </div>
             <div class="ex-item" onclick="App.startExercise('meaning')">
               <div class="ex-item-title">📝 Write the Meaning</div>
-              <div class="ex-item-sub">${this.completedExercises[this.currentStage]?.meaning ? '✓ Complete' : 'Not started'}</div>
+              <div class="ex-item-sub">${this.exerciseStatusText('meaning')}</div>
             </div>
           </div>
         </div>
@@ -176,8 +176,8 @@ const App = {
   },
 
   async startExercise(type) {
-    if (type === 'match' && this.completedExercises[this.currentStage]?.match) {
-      await this.showModal('Match the Meaning is already completed. Ask your teacher to reset the session to retry.');
+    if (this.completedExercises[this.currentStage]?.[type]?.completed) {
+      await this.showModal('This exercise is already completed. Ask your teacher to reset it to retry.');
       return;
     }
     this.currentExercise = type;
@@ -511,16 +511,18 @@ const App = {
         const total = this.words.length;
         const pct = Math.round((this.matchCorrectCount / total) * 100);
         if (this.matchCorrectCount / total >= 0.8) {
-          this.completedExercises[this.currentStage].match = true;
+          this.completedExercises[this.currentStage].match = { completed: true, correct: this.matchCorrectCount, total };
           await this.showModal(`Match complete! You got ${this.matchCorrectCount}/${total} correct (${pct}%).`);
         } else {
           await this.showModal(`You got ${this.matchCorrectCount}/${total} correct (${pct}%). You need 80% to pass. Ask your teacher to reset and try again.`);
         }
       } else {
-        this.completedExercises[this.currentStage][this.currentExercise] = true;
+        const correct = this.wordResults.filter(Boolean).length;
+        const total = this.currentExercise === 'meaning' ? this.meaningWords.length : this.words.length;
+        this.completedExercises[this.currentStage][this.currentExercise] = { completed: true, correct, total };
       }
       const completed = this.completedExercises[this.currentStage];
-      const allDone = completed.match && completed.jumble && completed.fill && completed.meaning;
+      const allDone = completed.match?.completed && completed.jumble?.completed && completed.fill?.completed && completed.meaning?.completed;
       if (allDone) {
         fetch('/api/stage/' + this.currentStage + '/submit', { method: 'POST' });
         await this.showModal('Stage complete! Submit for teacher assessment.');
@@ -532,6 +534,14 @@ const App = {
       else if (this.currentExercise === 'match') this.initMatch();
       else if (this.currentExercise === 'meaning') this.initMeaning();
     }
+  },
+
+  exerciseStatusText(type) {
+    const ex = this.completedExercises[this.currentStage]?.[type];
+    if (!ex?.completed) return '<span style="color: var(--text-muted);">Not started</span>';
+    const pct = Math.round((ex.correct / ex.total) * 100);
+    const color = pct >= 80 ? 'var(--cyber-green)' : pct >= 50 ? 'var(--cyber-yellow)' : 'var(--cyber-pink)';
+    return `<span style="font-family:'Rajdhani',sans-serif; font-size:28px; font-weight:700; color:${color}; line-height:1;">${pct}%</span><span style="font-size:11px; color:var(--text-muted); margin-left:6px;">${ex.correct}/${ex.total}</span>`;
   },
 
   showModal(message) {
@@ -621,6 +631,15 @@ const App = {
                 : ''
               ).join('')}
             </div>
+            ${s.progress.some(p => p.status !== 'locked') ? `
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--cyber-border);">
+              <span style="font-family: 'Share Tech Mono', monospace; font-size: 10px; color: var(--text-muted); letter-spacing: 2px; align-self: center;">RESET TASK:</span>
+              ${s.progress.filter(p => p.status !== 'locked').map(p =>
+                ['match', 'jumble', 'fill', 'meaning'].map(ex =>
+                  `<button class="btn" style="font-size: 10px; padding: 5px 10px; color: var(--cyber-pink); border: 1px solid rgba(255,45,120,0.2); background: transparent;" onclick="App.resetExercise(${s.id}, ${p.stage}, '${ex}')">S${p.stage} ${ex.toUpperCase()}</button>`
+                ).join('')
+              ).join('')}
+            </div>` : ''}
           </div>
         `).join('')}
       </div>
@@ -655,6 +674,18 @@ const App = {
         body: JSON.stringify({ user_id: userId, stage: stage })
       });
       this.showAdminDashboard();
+    }
+  },
+
+  async resetExercise(userId, stage, exerciseType) {
+    const label = exerciseType.toUpperCase();
+    if (confirm(`Reset ${label} for Stage ${stage}? This will delete only the ${label} answers.`)) {
+      await fetch('/api/admin/reset-exercise', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId, stage: stage, exercise_type: exerciseType })
+      });
+      await this.viewAnswers(userId, stage);
     }
   },
 
@@ -718,7 +749,10 @@ const App = {
               ? `<span class="tag tag-green">STAGE ${this.viewingStage} APPROVED</span>`
               : ''
           }
-          <button class="btn btn-outline" style="font-size: 11px; padding: 7px 16px;" onclick="App.resetStage(${userId}, ${this.viewingStage})">RESET STAGE ${this.viewingStage}</button>
+          <button class="btn btn-outline" style="font-size: 11px; padding: 7px 16px;" onclick="App.resetStage(${userId}, ${this.viewingStage})">RESET ALL</button>
+          ${['match', 'jumble', 'fill', 'meaning'].map(ex =>
+            `<button class="btn" style="font-size: 11px; padding: 7px 16px; color: var(--cyber-pink); border: 1px solid rgba(255,45,120,0.3); background: transparent;" onclick="App.resetExercise(${userId}, ${this.viewingStage}, '${ex}')">RESET ${ex.toUpperCase()}</button>`
+          ).join('')}
         </div>
 
         ${this.adminAnswers.length ? this.adminAnswers.map(answer => `

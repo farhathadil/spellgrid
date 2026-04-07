@@ -488,6 +488,96 @@ body::before {
   font-family: 'Rajdhani', sans-serif;
 }
 
+.answers-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.answers-stage-picker {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.answers-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.answer-card {
+  background: var(--cyber-panel);
+  border: 1px solid var(--cyber-border);
+  border-radius: 4px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.answer-card-correct {
+  border-color: rgba(0,255,136,0.25);
+}
+
+.answer-card-wrong {
+  border-color: rgba(255,45,120,0.25);
+}
+
+.answer-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.answer-word {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.answer-meta {
+  color: var(--text-muted);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 1px;
+  margin-top: 4px;
+}
+
+.answer-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.answer-panel {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--cyber-border);
+  border-radius: 4px;
+  padding: 14px;
+}
+
+.answer-text {
+  color: var(--text-primary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.answer-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .container { padding: 0 16px; }
@@ -496,6 +586,11 @@ body::before {
   .ex-grid { grid-template-columns: 1fr; }
   .login-title { font-size: 32px; }
   .corner-tl, .corner-tr, .corner-bl, .corner-br { display: none; }
+  .answers-header { flex-direction: column; }
+  .answers-stage-picker { justify-content: flex-start; }
+  .answer-card-top { flex-direction: column; }
+  .answer-grid { grid-template-columns: 1fr; }
+  .answers-toolbar, .answer-actions { justify-content: flex-start; }
 }
 
 @keyframes shake {

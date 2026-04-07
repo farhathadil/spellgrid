@@ -175,13 +175,21 @@ def get_exercise_status(stage_num):
 
     status = {}
     for ex_type in ('match', 'jumble', 'fill', 'meaning'):
-        answered = db.execute(
-            '''SELECT COUNT(DISTINCT word_id) as count FROM answers
+        row = db.execute(
+            '''SELECT COUNT(DISTINCT word_id) as answered,
+                      SUM(is_correct) as correct
+               FROM answers
                WHERE user_id = ? AND exercise_type = ?
                AND word_id IN (SELECT id FROM words WHERE stage = ?)''',
             (session['user_id'], ex_type, stage_num)
-        ).fetchone()['count']
-        status[ex_type] = (answered >= total and total > 0)
+        ).fetchone()
+        answered = row['answered'] or 0
+        correct = int(row['correct'] or 0)
+        status[ex_type] = {
+            'completed': (answered >= total and total > 0),
+            'correct': correct,
+            'total': total
+        }
 
     return jsonify(status)
 
@@ -414,6 +422,33 @@ def admin_reset():
               (user_id, stage))
     db.commit()
     
+    return jsonify({'success': True})
+
+@app.route('/api/admin/reset-exercise', methods=['POST'])
+def admin_reset_exercise():
+    if 'user_id' not in session or session['role'] != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    stage = data.get('stage')
+    exercise_type = data.get('exercise_type')
+    valid_types = ('match', 'jumble', 'fill', 'meaning')
+    if not user_id or not stage or exercise_type not in valid_types:
+        return jsonify({'error': 'Missing or invalid fields'}), 400
+
+    db = get_db()
+    db.execute(
+        '''DELETE FROM answers WHERE user_id = ? AND exercise_type = ?
+           AND word_id IN (SELECT id FROM words WHERE stage = ?)''',
+        (user_id, exercise_type, stage)
+    )
+    # If stage was submitted/approved, revert to active so student can redo this exercise
+    db.execute(
+        "UPDATE stage_progress SET status = 'active' WHERE user_id = ? AND stage = ? AND status != 'locked'",
+        (user_id, stage)
+    )
+    db.commit()
     return jsonify({'success': True})
 
 @app.route('/api/admin/answers/<int:user_id>/<int:stage>')
