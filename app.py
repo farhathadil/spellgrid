@@ -6,6 +6,7 @@ import json
 import random
 import datetime
 import re
+import math
 from fuzzywuzzy import fuzz
 
 app = Flask(__name__)
@@ -232,7 +233,9 @@ def submit_answer():
             expected_keywords = extract_keywords(definition)
 
         keyword_matches = len(answer_keywords & expected_keywords)
-        required_matches = max(1, min(len(expected_keywords), (len(expected_keywords) + 1) // 2))
+        # Require 80% of expected keywords — ceil ensures short definitions
+        # (e.g. "Extremely angry" = 2 keywords) need all keywords, not just one.
+        required_matches = max(1, math.ceil(len(expected_keywords) * 0.8))
 
         # Only apply fuzzy phrase matching if the answer has at least 2 meaningful keywords,
         # preventing single letters/stopword-only answers from matching via partial_ratio.

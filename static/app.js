@@ -10,6 +10,7 @@ const App = {
   jumbleLetters: [],
   answerLetters: [],
   selectedDefinitions: {},
+  matchCorrectCount: 0,
   adminAnswers: [],
   viewingStudentId: null,
   viewingStage: null,
@@ -79,7 +80,7 @@ const App = {
         this.showDashboard();
       }
     } else {
-      alert('Invalid username or PIN');
+      await this.showModal('Invalid username or PIN');
     }
   },
 
@@ -175,7 +176,7 @@ const App = {
 
   async startExercise(type) {
     if (type === 'match' && this.completedExercises[this.currentStage]?.match) {
-      alert('Match the Meaning is already completed. Ask your teacher to reset the session to retry.');
+      await this.showModal('Match the Meaning is already completed. Ask your teacher to reset the session to retry.');
       return;
     }
     this.currentExercise = type;
@@ -282,10 +283,10 @@ const App = {
     const data = await res.json();
     
     if (data.is_correct) {
-      alert('Correct!');
+      await this.showModal('Correct!');
       this.nextWord();
     } else {
-      alert('Incorrect. Try again.');
+      await this.showModal('Incorrect. Try again.');
     }
   },
 
@@ -369,15 +370,17 @@ const App = {
     const data = await res.json();
     
     if (data.is_correct) {
-      alert('Correct!');
+      await this.showModal('Correct!');
       this.nextWord();
     } else {
-      alert('Incorrect. Try again.');
+      await this.showModal('Incorrect. Try again.');
     }
   },
 
   initMatch() {
-    // Shuffle definitions
+    if (this.currentWordIndex === 0) {
+      this.matchCorrectCount = 0;
+    }
     this.definitions = this.shuffleArray(this.words.map(w => ({ id: w.id, definition: w.definition })));
     this.selectedDefinitions = {};
     this.renderMatch();
@@ -428,7 +431,8 @@ const App = {
 
     const data = await res.json();
 
-    alert(data.is_correct ? 'Correct!' : 'Wrong!');
+    if (data.is_correct) this.matchCorrectCount++;
+    await this.showModal(data.is_correct ? 'Correct!' : 'Wrong!');
     this.nextWord();
   },
 
@@ -476,7 +480,7 @@ const App = {
     const word = this.meaningWords[this.currentWordIndex];
     
     if (!answer.trim()) {
-      alert('Please enter an answer');
+      await this.showModal('Please enter an answer');
       return;
     }
     
@@ -493,22 +497,33 @@ const App = {
     const data = await res.json();
     
     if (data.is_correct) {
-      alert('Good answer!');
+      await this.showModal('Good answer!');
     } else {
-      alert('Marked wrong. Wait for the teacher to give you a second chance.');
+      await this.showModal('Marked wrong. Wait for the teacher to give you a second chance.');
     }
     this.nextWord();
   },
 
-  nextWord() {
+  async nextWord() {
     this.currentWordIndex++;
     if (this.currentWordIndex >= this.words.length) {
-      this.completedExercises[this.currentStage][this.currentExercise] = true;
+      if (this.currentExercise === 'match') {
+        const total = this.words.length;
+        const pct = Math.round((this.matchCorrectCount / total) * 100);
+        if (this.matchCorrectCount / total >= 0.8) {
+          this.completedExercises[this.currentStage].match = true;
+          await this.showModal(`Match complete! You got ${this.matchCorrectCount}/${total} correct (${pct}%).`);
+        } else {
+          await this.showModal(`You got ${this.matchCorrectCount}/${total} correct (${pct}%). You need 80% to pass. Ask your teacher to reset and try again.`);
+        }
+      } else {
+        this.completedExercises[this.currentStage][this.currentExercise] = true;
+      }
       const completed = this.completedExercises[this.currentStage];
       const allDone = completed.match && completed.jumble && completed.fill && completed.meaning;
       if (allDone) {
         fetch('/api/stage/' + this.currentStage + '/submit', { method: 'POST' });
-        alert('Stage complete! Submit for teacher assessment.');
+        await this.showModal('Stage complete! Submit for teacher assessment.');
       }
       this.showDashboard();
     } else {
@@ -517,6 +532,25 @@ const App = {
       else if (this.currentExercise === 'match') this.initMatch();
       else if (this.currentExercise === 'meaning') this.initMeaning();
     }
+  },
+
+  showModal(message) {
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999;';
+      overlay.innerHTML = `
+        <div style="background:var(--cyber-bg,#0d1117);border:1px solid var(--cyber-border,#30363d);border-radius:8px;min-width:300px;max-width:480px;font-family:'Share Tech Mono',monospace;">
+          <div style="padding:12px 20px;border-bottom:1px solid var(--cyber-border,#30363d);font-size:11px;letter-spacing:3px;color:var(--cyber-cyan,#00d4ff);">SPELLGRID</div>
+          <div style="padding:24px 20px;font-size:15px;color:var(--text-primary,#e6edf3);line-height:1.5;">${message}</div>
+          <div style="padding:12px 20px;display:flex;justify-content:flex-end;">
+            <button id="sg-modal-ok" style="background:var(--cyber-cyan,#00d4ff);color:#000;border:none;padding:8px 24px;font-family:'Share Tech Mono',monospace;font-size:13px;letter-spacing:2px;cursor:pointer;border-radius:4px;">OK</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      const close = () => { document.body.removeChild(overlay); resolve(); };
+      overlay.querySelector('#sg-modal-ok').addEventListener('click', close);
+      overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    });
   },
 
   shuffleArray(arr) {
@@ -623,7 +657,7 @@ const App = {
   async viewAnswers(userId, stage = null) {
     const student = this.adminStudents.find(s => s.id === userId);
     if (!student) {
-      alert('Student not found');
+      await this.showModal('Student not found');
       return;
     }
 
