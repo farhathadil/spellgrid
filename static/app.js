@@ -11,6 +11,7 @@ const App = {
   answerLetters: [],
   selectedDefinitions: {},
   matchCorrectCount: 0,
+  wordResults: [],
   adminAnswers: [],
   viewingStudentId: null,
   viewingStage: null,
@@ -181,6 +182,7 @@ const App = {
     }
     this.currentExercise = type;
     this.currentWordIndex = 0;
+    this.wordResults = [];
 
     if (type === 'jumble') {
       this.initJumble();
@@ -212,14 +214,11 @@ const App = {
         <div class="exercise-header">
           <div class="exercise-label">// JUMBLE · ${this.currentWordIndex + 1} OF ${this.words.length}</div>
           <div class="progress-dots">
-            ${this.words.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? 'var(--cyber-green)' : i === this.currentWordIndex ? 'var(--cyber-pink)' : 'var(--cyber-border)'}"></div>`).join('')}
+            ${this.words.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? (this.wordResults[i] ? 'var(--cyber-green)' : 'var(--cyber-pink)') : i === this.currentWordIndex ? 'var(--cyber-pink)' : 'var(--cyber-border)'}"></div>`).join('')}
           </div>
         </div>
         
         <div class="jumble-container">
-          <div class="label">DEFINITION</div>
-          <div class="definition">"${word.definition}"</div>
-          
           <div class="label">ARRANGE THE LETTERS</div>
           <div class="letters-container">
             ${this.jumbleLetters.map((l, i) => l ? `<div class="letter-tile" onclick="App.selectLetter(${i})">${l}</div>` : '').join('')}
@@ -281,13 +280,9 @@ const App = {
     });
     
     const data = await res.json();
-    
-    if (data.is_correct) {
-      await this.showModal('Correct!');
-      this.nextWord();
-    } else {
-      await this.showModal('Incorrect. Try again.');
-    }
+    this.wordResults[this.currentWordIndex] = data.is_correct;
+    await this.showModal(data.is_correct ? 'Correct!' : 'Wrong!');
+    this.nextWord();
   },
 
   initFill() {
@@ -316,7 +311,7 @@ const App = {
         <div class="exercise-header">
           <div class="exercise-label">// FILL LETTERS · ${this.currentWordIndex + 1} OF ${this.words.length}</div>
           <div class="progress-dots">
-            ${this.words.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? 'var(--cyber-green)' : i === this.currentWordIndex ? 'var(--cyber-purple)' : 'var(--cyber-border)'}"></div>`).join('')}
+            ${this.words.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? (this.wordResults[i] ? 'var(--cyber-green)' : 'var(--cyber-pink)') : i === this.currentWordIndex ? 'var(--cyber-purple)' : 'var(--cyber-border)'}"></div>`).join('')}
           </div>
         </div>
         
@@ -369,20 +364,15 @@ const App = {
     
     const data = await res.json();
     
-    if (data.is_correct) {
-      await this.showModal('Correct!');
-      this.nextWord();
-    } else {
-      await this.showModal('Incorrect. Try again.');
-    }
+    this.wordResults[this.currentWordIndex] = data.is_correct;
+    await this.showModal(data.is_correct ? 'Correct!' : 'Wrong!');
+    this.nextWord();
   },
 
   initMatch() {
     if (this.currentWordIndex === 0) {
       this.matchCorrectCount = 0;
     }
-    this.definitions = this.shuffleArray(this.words.map(w => ({ id: w.id, definition: w.definition })));
-    this.selectedDefinitions = {};
     this.renderMatch();
   },
 
@@ -397,42 +387,55 @@ const App = {
         <div class="exercise-header">
           <div class="exercise-label">// MATCH MEANING · ${this.currentWordIndex + 1} OF ${this.words.length}</div>
           <div class="progress-dots">
-            ${this.words.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? 'var(--cyber-green)' : i === this.currentWordIndex ? 'var(--cyber-cyan)' : 'var(--cyber-border)'}"></div>`).join('')}
+            ${this.words.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? (this.wordResults[i] ? 'var(--cyber-green)' : 'var(--cyber-pink)') : i === this.currentWordIndex ? 'var(--cyber-cyan)' : 'var(--cyber-border)'}"></div>`).join('')}
           </div>
         </div>
-        
+
         <div style="text-align: center; margin: 24px 0;">
-          <div style="font-family: 'Rajdhani', sans-serif; font-size: 32px; font-weight: 700; color: var(--cyber-cyan); margin-bottom: 24px;">${word.word.toUpperCase()}</div>
-          
-          <div style="display: grid; grid-template-columns: 1fr; gap: 8px; max-width: 600px; margin: 0 auto;">
-            ${this.definitions.map(d => `
-              <div class="panel panel-cyan" style="cursor: pointer; padding: 16px;" onclick="App.selectMatch(${d.id})">
-                ${d.definition}
-              </div>
-            `).join('')}
+          <div style="font-family: 'Rajdhani', sans-serif; font-size: 32px; font-weight: 700; color: var(--cyber-cyan); margin-bottom: 32px;">${word.word.toUpperCase()}</div>
+
+          <div style="max-width: 600px; margin: 0 auto;">
+            <label class="label">TYPE THE EXACT MEANING</label>
+            <textarea class="meaning-textarea" id="matchAnswer" placeholder="Type the meaning exactly as it appears..."></textarea>
           </div>
+        </div>
+
+        <div style="display: flex; justify-content: center; gap: 12px; margin-top: 24px;">
+          <button class="btn btn-outline" onclick="App.renderMatch()">CLEAR</button>
+          <button class="btn btn-cyan" onclick="App.checkMatch()">SUBMIT →</button>
         </div>
       </div>
     `;
   },
 
-  async selectMatch(defId) {
+  async checkMatch() {
+    const answer = document.getElementById('matchAnswer').value;
     const word = this.words[this.currentWordIndex];
-    
+
+    if (!answer.trim()) {
+      await this.showModal('Please enter an answer');
+      return;
+    }
+
     const res = await fetch('/api/answers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         word_id: word.id,
         exercise_type: 'match',
-        answer: this.words.find(w => w.id === defId)?.word || ''
+        answer: answer
       })
     });
 
     const data = await res.json();
 
-    if (data.is_correct) this.matchCorrectCount++;
-    await this.showModal(data.is_correct ? 'Correct!' : 'Wrong!');
+    this.wordResults[this.currentWordIndex] = data.is_correct;
+    if (data.is_correct) {
+      this.matchCorrectCount++;
+      await this.showModal('Correct!');
+    } else {
+      await this.showModal('Wrong!');
+    }
     this.nextWord();
   },
 
@@ -454,7 +457,7 @@ const App = {
         <div class="exercise-header">
           <div class="exercise-label">// WRITE MEANING · ${this.currentWordIndex + 1} OF ${this.meaningWords.length}</div>
           <div class="progress-dots">
-            ${this.meaningWords.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? 'var(--cyber-green)' : i === this.currentWordIndex ? 'var(--cyber-yellow)' : 'var(--cyber-border)'}"></div>`).join('')}
+            ${this.meaningWords.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? (this.wordResults[i] ? 'var(--cyber-green)' : 'var(--cyber-pink)') : i === this.currentWordIndex ? 'var(--cyber-yellow)' : 'var(--cyber-border)'}"></div>`).join('')}
           </div>
         </div>
         
@@ -495,7 +498,7 @@ const App = {
     });
     
     const data = await res.json();
-    
+    this.wordResults[this.currentWordIndex] = data.is_correct;
     if (data.is_correct) {
       await this.showModal('Good answer!');
     } else {
@@ -612,8 +615,12 @@ const App = {
                 : ''
               ).join('')}
               <button class="btn btn-outline" style="font-size: 11px; padding: 7px 16px;" onclick="App.viewAnswers(${s.id})">VIEW ANSWERS</button>
-              ${s.progress.map(p => p.status !== 'locked' 
-                ? `<button class="btn" style="font-size: 11px; padding: 7px 16px; color: var(--cyber-pink); border: 1px solid rgba(255,45,120,0.3); background: transparent;" onclick="App.resetStage(${s.id}, ${p.stage})">RESET STAGE ${p.stage}</button>` 
+              ${s.progress.map(p => p.status !== 'locked'
+                ? `<button class="btn" style="font-size: 11px; padding: 7px 16px; color: var(--cyber-pink); border: 1px solid rgba(255,45,120,0.3); background: transparent;" onclick="App.resetStage(${s.id}, ${p.stage})">RESET STAGE ${p.stage}</button>`
+                : ''
+              ).join('')}
+              ${s.progress.map(p => p.status !== 'locked'
+                ? `<button class="btn" style="font-size: 11px; padding: 7px 16px; color: var(--cyber-yellow); border: 1px solid rgba(255,200,0,0.3); background: transparent;" onclick="App.lockStage(${s.id}, ${p.stage})">LOCK STAGE ${p.stage}</button>`
                 : ''
               ).join('')}
             </div>
@@ -651,6 +658,17 @@ const App = {
         body: JSON.stringify({ user_id: userId, stage: stage })
       });
       this.showAdminDashboard();
+    }
+  },
+
+  async lockStage(userId, stage) {
+    if (confirm(`Lock Stage ${stage} for this student? They will not be able to access it until unlocked.`)) {
+      await fetch('/api/admin/lock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId, stage: stage })
+      });
+      await this.showAdminDashboard();
     }
   },
 

@@ -217,7 +217,10 @@ def submit_answer():
     answer_normalized = answer.strip()
     
     if exercise_type == 'match':
-        is_correct = (answer_normalized.lower() == word['word'].lower())
+        # Student must type the definition exactly (case-insensitive, whitespace-normalised)
+        expected = ' '.join(word['definition'].lower().split())
+        given = ' '.join(answer_normalized.lower().split())
+        is_correct = (given == expected)
     elif exercise_type == 'jumble':
         is_correct = (answer_normalized.lower() == word['word'].lower())
     elif exercise_type == 'fill':
@@ -366,6 +369,30 @@ def admin_approve_stage():
         'next_stage_unlocked': bool(next_progress and next_progress['status'] == 'locked'),
         'next_stage': next_stage if next_stage <= 5 else None
     })
+
+@app.route('/api/admin/lock', methods=['POST'])
+def admin_lock():
+    if 'user_id' not in session or session['role'] != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    stage = data.get('stage')
+    if not user_id or not stage:
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    db = get_db()
+    progress = db.execute('SELECT * FROM stage_progress WHERE user_id = ? AND stage = ?',
+                         (user_id, stage)).fetchone()
+    if not progress:
+        return jsonify({'error': 'Stage not found'}), 404
+    if progress['status'] == 'locked':
+        return jsonify({'error': 'Stage is already locked'}), 400
+
+    db.execute('UPDATE stage_progress SET status = "locked" WHERE user_id = ? AND stage = ?',
+               (user_id, stage))
+    db.commit()
+    return jsonify({'success': True})
 
 @app.route('/api/admin/reset', methods=['POST'])
 def admin_reset():
