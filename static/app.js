@@ -316,9 +316,6 @@ const App = {
         </div>
         
         <div class="fill-container">
-          <div class="label">DEFINITION</div>
-          <div class="definition">"${word.definition}"</div>
-          
           <div class="fill-word">
             ${letters.map((l, i) => hidden[i] 
               ? `<input type="text" class="fill-input" data-index="${i}" maxlength="1" oninput="App.checkFillComplete()">`
