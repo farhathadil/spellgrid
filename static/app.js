@@ -183,6 +183,7 @@ const App = {
     this.currentExercise = type;
     this.currentWordIndex = 0;
     this.wordResults = [];
+    this.wordAttempts = [];
 
     if (type === 'jumble') {
       this.initJumble();
@@ -280,9 +281,22 @@ const App = {
     });
     
     const data = await res.json();
-    this.wordResults[this.currentWordIndex] = data.is_correct;
-    await this.showModal(data.is_correct ? 'Correct!' : 'Wrong!');
-    this.nextWord();
+    if (data.is_correct) {
+      this.wordResults[this.currentWordIndex] = true;
+      await this.showModal('Correct!');
+      this.nextWord();
+    } else {
+      this.wordAttempts[this.currentWordIndex] = (this.wordAttempts[this.currentWordIndex] || 0) + 1;
+      const remaining = 3 - this.wordAttempts[this.currentWordIndex];
+      if (remaining > 0) {
+        await this.showModal(`Wrong! ${remaining} chance${remaining === 1 ? '' : 's'} left.`);
+        this.initJumble();
+      } else {
+        this.wordResults[this.currentWordIndex] = false;
+        await this.showModal(`Wrong! The word was "${word.word}". Moving on...`);
+        this.nextWord();
+      }
+    }
   },
 
   initFill() {
@@ -360,10 +374,22 @@ const App = {
     });
     
     const data = await res.json();
-    
-    this.wordResults[this.currentWordIndex] = data.is_correct;
-    await this.showModal(data.is_correct ? 'Correct!' : 'Wrong!');
-    this.nextWord();
+    if (data.is_correct) {
+      this.wordResults[this.currentWordIndex] = true;
+      await this.showModal('Correct!');
+      this.nextWord();
+    } else {
+      this.wordAttempts[this.currentWordIndex] = (this.wordAttempts[this.currentWordIndex] || 0) + 1;
+      const remaining = 3 - this.wordAttempts[this.currentWordIndex];
+      if (remaining > 0) {
+        await this.showModal(`Wrong! ${remaining} chance${remaining === 1 ? '' : 's'} left.`);
+        this.initFill();
+      } else {
+        this.wordResults[this.currentWordIndex] = false;
+        await this.showModal(`Wrong! The word was "${word.word}". Moving on...`);
+        this.nextWord();
+      }
+    }
   },
 
   initMatch() {
@@ -426,14 +452,23 @@ const App = {
 
     const data = await res.json();
 
-    this.wordResults[this.currentWordIndex] = data.is_correct;
     if (data.is_correct) {
+      this.wordResults[this.currentWordIndex] = true;
       this.matchCorrectCount++;
       await this.showModal('Correct!');
+      this.nextWord();
     } else {
-      await this.showModal('Wrong!');
+      this.wordAttempts[this.currentWordIndex] = (this.wordAttempts[this.currentWordIndex] || 0) + 1;
+      const remaining = 3 - this.wordAttempts[this.currentWordIndex];
+      if (remaining > 0) {
+        await this.showModal(`Wrong! ${remaining} chance${remaining === 1 ? '' : 's'} left.`);
+        this.renderMatch();
+      } else {
+        this.wordResults[this.currentWordIndex] = false;
+        await this.showModal(`Wrong! The correct meaning was:\n"${word.definition}"\nMoving on...`);
+        this.nextWord();
+      }
     }
-    this.nextWord();
   },
 
   initMeaning() {
@@ -495,13 +530,22 @@ const App = {
     });
     
     const data = await res.json();
-    this.wordResults[this.currentWordIndex] = data.is_correct;
     if (data.is_correct) {
+      this.wordResults[this.currentWordIndex] = true;
       await this.showModal('Good answer!');
+      this.nextWord();
     } else {
-      await this.showModal('Marked wrong. Wait for the teacher to give you a second chance.');
+      this.wordAttempts[this.currentWordIndex] = (this.wordAttempts[this.currentWordIndex] || 0) + 1;
+      const remaining = 3 - this.wordAttempts[this.currentWordIndex];
+      if (remaining > 0) {
+        await this.showModal(`Wrong! ${remaining} chance${remaining === 1 ? '' : 's'} left.`);
+        this.renderMeaning();
+      } else {
+        this.wordResults[this.currentWordIndex] = false;
+        await this.showModal(`Wrong! The correct meaning was:\n"${word.definition}"\nMoving on...`);
+        this.nextWord();
+      }
     }
-    this.nextWord();
   },
 
   async nextWord() {
