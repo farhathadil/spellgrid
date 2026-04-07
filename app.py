@@ -5,6 +5,7 @@ import hashlib
 import json
 import random
 import datetime
+import re
 from fuzzywuzzy import fuzz
 
 app = Flask(__name__)
@@ -26,13 +27,30 @@ def shuffle_array(arr):
         arr[i], arr[j] = arr[j], arr[i]
     return arr
 
+STOPWORDS = {
+    'the', 'and', 'or', 'to', 'of', 'in', 'is', 'a', 'an', 'that', 'which', 'for',
+    'with', 'on', 'by', 'at', 'from', 'as', 'into', 'through', 'during', 'before',
+    'after', 'above', 'below', 'between', 'under', 'again', 'further', 'then', 'once',
+    'here', 'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few', 'more',
+    'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so',
+    'than', 'too', 'very', 'can', 'will', 'just', 'should', 'now', 'it', 'its', 'this',
+    'these', 'those', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'but',
+    'if', 'because', 'while', 'also', 'about', 'would', 'could', 'their', 'they', 'them',
+    'your', 'you', 'his', 'her', 'our', 'who', 'whom', 'any', 'may', 'must', 'many',
+    'much', 'having'
+}
+
+def extract_keywords(text):
+    tokens = re.findall(r"[a-zA-Z]+", text.lower())
+    return {token for token in tokens if len(token) > 2 and token not in STOPWORDS}
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     username = data.get('username')
     pin = data.get('pin')
     
@@ -130,10 +148,15 @@ def get_stage_words(stage_num):
                   (json.dumps(word_ids), session['user_id'], stage_num))
         db.commit()
     
-    # Get words
-    words = db.execute('SELECT id, word, definition, keywords FROM words WHERE id IN ({}) ORDER BY INSTR(?, id)'.format(','.join('?'*len(word_ids))),
-                      tuple(word_ids) + (','.join(map(str, word_ids)),)).fetchall()
-    
+    # Get words in the stored shuffle order
+    placeholders = ','.join('?' * len(word_ids))
+    rows = db.execute(
+        f'SELECT id, word, definition, keywords FROM words WHERE id IN ({placeholders})',
+        tuple(word_ids)
+    ).fetchall()
+    order = {wid: i for i, wid in enumerate(word_ids)}
+    words = sorted(rows, key=lambda w: order[w['id']])
+
     return jsonify([{
         'id': w['id'],
         'word': w['word'],
@@ -141,47 +164,91 @@ def get_stage_words(stage_num):
         'keywords': w['keywords'].split(',') if w['keywords'] else []
     } for w in words])
 
+@app.route('/api/stage/<int:stage_num>/exercise-status')
+def get_exercise_status(stage_num):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not logged in'}), 401
+
+    db = get_db()
+    total = db.execute('SELECT COUNT(*) as count FROM words WHERE stage = ?', (stage_num,)).fetchone()['count']
+
+    status = {}
+    for ex_type in ('match', 'jumble', 'fill', 'meaning'):
+        answered = db.execute(
+            '''SELECT COUNT(DISTINCT word_id) as count FROM answers
+               WHERE user_id = ? AND exercise_type = ?
+               AND word_id IN (SELECT id FROM words WHERE stage = ?)''',
+            (session['user_id'], ex_type, stage_num)
+        ).fetchone()['count']
+        status[ex_type] = (answered >= total and total > 0)
+
+    return jsonify(status)
+
 @app.route('/api/answers', methods=['POST'])
 def submit_answer():
     if 'user_id' not in session:
         return jsonify({'error': 'Not logged in'}), 401
     
-    data = request.json
+    data = request.get_json(silent=True) or {}
     word_id = data.get('word_id')
     exercise_type = data.get('exercise_type')
     answer = data.get('answer')
     
     if not word_id or not exercise_type:
         return jsonify({'error': 'Missing required fields'}), 400
+    if exercise_type not in {'match', 'jumble', 'fill', 'meaning'}:
+        return jsonify({'error': 'Invalid exercise type'}), 400
+    if not isinstance(answer, str) or not answer.strip():
+        return jsonify({'error': 'Answer is required'}), 400
     
     db = get_db()
     word = db.execute('SELECT * FROM words WHERE id = ?', (word_id,)).fetchone()
     
     if not word:
         return jsonify({'error': 'Word not found'}), 404
+
+    progress = db.execute('SELECT * FROM stage_progress WHERE user_id = ? AND stage = ?',
+                         (session['user_id'], word['stage'])).fetchone()
+    if not progress or progress['status'] != 'active':
+        return jsonify({'error': 'Stage is not available for answers'}), 403
     
     is_correct = False
+    answer_normalized = answer.strip()
     
     if exercise_type == 'match':
-        is_correct = (answer.lower() == word['word'].lower())
+        is_correct = (answer_normalized.lower() == word['word'].lower())
     elif exercise_type == 'jumble':
-        is_correct = (answer.lower() == word['word'].lower())
+        is_correct = (answer_normalized.lower() == word['word'].lower())
     elif exercise_type == 'fill':
-        is_correct = (answer.lower() == word['word'].lower())
+        is_correct = (answer_normalized.lower() == word['word'].lower())
     elif exercise_type == 'meaning':
-        # Fuzzy matching for meaning
-        keywords = word['keywords'].split(',') if word['keywords'] else []
-        answer_lower = answer.lower()
-        score = 0
-        for kw in keywords:
-            if kw in answer_lower:
-                score += 1
-        is_correct = (score >= 1)
+        # Grade against the curated stored keywords first, then fall back to the definition text.
+        definition = word['definition'].lower()
+        answer_lower = answer_normalized.lower()
+
+        answer_keywords = extract_keywords(answer_lower)
+        expected_keywords = extract_keywords(word['keywords'] or '')
+        if not expected_keywords:
+            expected_keywords = extract_keywords(definition)
+
+        keyword_matches = len(answer_keywords & expected_keywords)
+        required_matches = max(1, min(len(expected_keywords), (len(expected_keywords) + 1) // 2))
+
+        # Only apply fuzzy phrase matching if the answer has at least 2 meaningful keywords,
+        # preventing single letters/stopword-only answers from matching via partial_ratio.
+        phrase_match = (
+            len(answer_keywords) >= 2 and (
+                fuzz.token_set_ratio(answer_lower, definition) >= 85 or
+                fuzz.partial_ratio(answer_lower, definition) >= 85
+            )
+        )
+
+        is_correct = keyword_matches >= required_matches or phrase_match
     
     # Insert answer
     db.execute('''INSERT INTO answers (user_id, word_id, exercise_type, answer, is_correct)
                  VALUES (?, ?, ?, ?, ?)''',
-              (session['user_id'], word_id, exercise_type, answer, is_correct))
+              (session['user_id'], word_id, exercise_type, answer_normalized, is_correct))
     db.commit()
     
     return jsonify({
@@ -197,6 +264,11 @@ def submit_stage(stage_num):
         return jsonify({'error': 'Not logged in'}), 401
     
     db = get_db()
+    progress = db.execute('SELECT * FROM stage_progress WHERE user_id = ? AND stage = ?',
+                         (session['user_id'], stage_num)).fetchone()
+    if not progress or progress['status'] != 'active':
+        return jsonify({'error': 'Stage is not available for submission'}), 403
+
     db.execute('UPDATE stage_progress SET status = "submitted" WHERE user_id = ? AND stage = ?',
               (session['user_id'], stage_num))
     db.commit()
@@ -232,25 +304,76 @@ def admin_unlock():
     if 'user_id' not in session or session['role'] != 'admin':
         return jsonify({'error': 'Unauthorized'}), 403
     
-    data = request.json
+    data = request.get_json(silent=True) or {}
     user_id = data.get('user_id')
     stage = data.get('stage')
+    if not user_id or not stage:
+        return jsonify({'error': 'Missing required fields'}), 400
     
     db = get_db()
+    progress = db.execute('SELECT * FROM stage_progress WHERE user_id = ? AND stage = ?',
+                         (user_id, stage)).fetchone()
+    if not progress:
+        return jsonify({'error': 'Stage not found'}), 404
+    if progress['status'] != 'locked':
+        return jsonify({'error': 'Only locked stages can be unlocked'}), 400
+
     db.execute('UPDATE stage_progress SET status = "active", unlocked_at = ? WHERE user_id = ? AND stage = ?',
               (datetime.datetime.now(), user_id, stage))
     db.commit()
     
     return jsonify({'success': True})
 
+@app.route('/api/admin/approve-stage', methods=['POST'])
+def admin_approve_stage():
+    if 'user_id' not in session or session['role'] != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    stage = data.get('stage')
+    if not user_id or not stage:
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    db = get_db()
+    progress = db.execute('SELECT * FROM stage_progress WHERE user_id = ? AND stage = ?',
+                         (user_id, stage)).fetchone()
+    if not progress:
+        return jsonify({'error': 'Stage not found'}), 404
+    if progress['status'] != 'submitted':
+        return jsonify({'error': 'Only submitted stages can be approved'}), 400
+
+    db.execute('UPDATE stage_progress SET status = "approved" WHERE user_id = ? AND stage = ?',
+              (user_id, stage))
+
+    next_stage = stage + 1
+    next_progress = None
+    if next_stage <= 5:
+        next_progress = db.execute('SELECT * FROM stage_progress WHERE user_id = ? AND stage = ?',
+                                  (user_id, next_stage)).fetchone()
+        if next_progress and next_progress['status'] == 'locked':
+            db.execute('UPDATE stage_progress SET status = "active", unlocked_at = ? WHERE user_id = ? AND stage = ?',
+                      (datetime.datetime.now(), user_id, next_stage))
+
+    db.commit()
+
+    return jsonify({
+        'success': True,
+        'approved_stage': stage,
+        'next_stage_unlocked': bool(next_progress and next_progress['status'] == 'locked'),
+        'next_stage': next_stage if next_stage <= 5 else None
+    })
+
 @app.route('/api/admin/reset', methods=['POST'])
 def admin_reset():
     if 'user_id' not in session or session['role'] != 'admin':
         return jsonify({'error': 'Unauthorized'}), 403
     
-    data = request.json
+    data = request.get_json(silent=True) or {}
     user_id = data.get('user_id')
     stage = data.get('stage')
+    if not user_id or not stage:
+        return jsonify({'error': 'Missing required fields'}), 400
     
     db = get_db()
     # Delete answers for this stage
@@ -293,9 +416,11 @@ def admin_override():
     if 'user_id' not in session or session['role'] != 'admin':
         return jsonify({'error': 'Unauthorized'}), 403
     
-    data = request.json
+    data = request.get_json(silent=True) or {}
     answer_id = data.get('answer_id')
     is_correct = data.get('is_correct')
+    if answer_id is None or is_correct is None:
+        return jsonify({'error': 'Missing required fields'}), 400
     
     db = get_db()
     db.execute('UPDATE answers SET is_correct = ?, teacher_override = 1 WHERE id = ?',

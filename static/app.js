@@ -1,6 +1,7 @@
 const App = {
   user: null,
   progress: [],
+  adminStudents: [],
   currentStage: null,
   currentExercise: null,
   currentWordIndex: 0,
@@ -9,6 +10,9 @@ const App = {
   jumbleLetters: [],
   answerLetters: [],
   selectedDefinitions: {},
+  adminAnswers: [],
+  viewingStudentId: null,
+  viewingStage: null,
 
   async init() {
     try {
@@ -16,7 +20,11 @@ const App = {
       if (res.ok) {
         this.user = await res.json();
         await this.loadProgress();
-        this.showDashboard();
+        if (this.user.role === 'admin') {
+          await this.showAdminDashboard();
+        } else {
+          this.showDashboard();
+        }
       } else {
         this.showLogin();
       }
@@ -66,7 +74,7 @@ const App = {
       this.user = await res.json();
       await this.loadProgress();
       if (this.user.role === 'admin') {
-        this.showAdminDashboard();
+        await this.showAdminDashboard();
       } else {
         this.showDashboard();
       }
@@ -153,18 +161,26 @@ const App = {
   async selectStage(stage) {
     const p = this.progress.find(x => x.stage === stage);
     if (p.status === 'locked') return;
-    
+
     this.currentStage = stage;
-    this.completedExercises[stage] = { match: false, jumble: false, fill: false, meaning: false };
-    const res = await fetch(`/api/stage/${stage}/words`);
-    this.words = await res.json();
+    const [wordsRes, statusRes] = await Promise.all([
+      fetch(`/api/stage/${stage}/words`),
+      fetch(`/api/stage/${stage}/exercise-status`)
+    ]);
+    this.words = await wordsRes.json();
+    const status = await statusRes.json();
+    this.completedExercises[stage] = status;
     this.showDashboard();
   },
 
   async startExercise(type) {
+    if (type === 'match' && this.completedExercises[this.currentStage]?.match) {
+      alert('Match the Meaning is already completed. Ask your teacher to reset the session to retry.');
+      return;
+    }
     this.currentExercise = type;
     this.currentWordIndex = 0;
-    
+
     if (type === 'jumble') {
       this.initJumble();
     } else if (type === 'fill') {
@@ -217,7 +233,7 @@ const App = {
         
         <div style="display: flex; justify-content: center; gap: 12px; margin-top: 24px;">
           <button class="btn btn-outline" onclick="App.clearJumble()">CLEAR</button>
-          <button class="btn btn-cyan" onclick="App.checkJumble()">CHECK →</button>
+          <button class="btn btn-cyan" onclick="App.checkJumble()" ${this.answerLetters.every(l => l !== null) ? '' : 'disabled'}>CHECK →</button>
         </div>
       </div>
     `;
@@ -267,12 +283,9 @@ const App = {
     
     if (data.is_correct) {
       alert('Correct!');
-      this.completedExercises[this.currentStage].jumble = true;
       this.nextWord();
     } else {
-      alert('Incorrect. The correct answer is: ' + word.word);
-      this.completedExercises[this.currentStage].jumble = true;
-      this.nextWord();
+      alert('Incorrect. Try again.');
     }
   },
 
@@ -357,12 +370,9 @@ const App = {
     
     if (data.is_correct) {
       alert('Correct!');
-      this.completedExercises[this.currentStage].fill = true;
       this.nextWord();
     } else {
-      alert('Incorrect. The correct answer is: ' + word.word);
-      this.completedExercises[this.currentStage].fill = true;
-      this.nextWord();
+      alert('Incorrect. Try again.');
     }
   },
 
@@ -415,26 +425,22 @@ const App = {
         answer: this.words.find(w => w.id === defId)?.word || ''
       })
     });
-    
+
     const data = await res.json();
-    
-    if (data.is_correct) {
-      alert('Correct!');
-      this.completedExercises[this.currentStage].match = true;
-      this.nextWord();
-    } else {
-      alert('Incorrect. Try again after teacher assessment.');
-      this.completedExercises[this.currentStage].match = true;
-      this.showDashboard();
-    }
+
+    alert(data.is_correct ? 'Correct!' : 'Wrong!');
+    this.nextWord();
   },
 
   initMeaning() {
+    if (this.currentWordIndex === 0) {
+      this.meaningWords = this.shuffleArray([...this.words]);
+    }
     this.renderMeaning();
   },
 
   renderMeaning() {
-    const word = this.words[this.currentWordIndex];
+    const word = this.meaningWords[this.currentWordIndex];
     document.getElementById('app').innerHTML = `
       <div class="header">
         <div class="logo">SPELLGRID</div>
@@ -442,9 +448,9 @@ const App = {
       </div>
       <div class="container" style="padding-top: 32px;">
         <div class="exercise-header">
-          <div class="exercise-label">// WRITE MEANING · ${this.currentWordIndex + 1} OF ${this.words.length}</div>
+          <div class="exercise-label">// WRITE MEANING · ${this.currentWordIndex + 1} OF ${this.meaningWords.length}</div>
           <div class="progress-dots">
-            ${this.words.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? 'var(--cyber-green)' : i === this.currentWordIndex ? 'var(--cyber-yellow)' : 'var(--cyber-border)'}"></div>`).join('')}
+            ${this.meaningWords.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? 'var(--cyber-green)' : i === this.currentWordIndex ? 'var(--cyber-yellow)' : 'var(--cyber-border)'}"></div>`).join('')}
           </div>
         </div>
         
@@ -467,7 +473,7 @@ const App = {
 
   async checkMeaning() {
     const answer = document.getElementById('meaningAnswer').value;
-    const word = this.words[this.currentWordIndex];
+    const word = this.meaningWords[this.currentWordIndex];
     
     if (!answer.trim()) {
       alert('Please enter an answer');
@@ -488,27 +494,21 @@ const App = {
     
     if (data.is_correct) {
       alert('Good answer!');
-      this.completedExercises[this.currentStage].meaning = true;
     } else {
-      alert('Answer submitted for teacher review.\n\nDefinition: "' + word.definition + '"');
-      this.completedExercises[this.currentStage].meaning = true;
+      alert('Marked wrong. Wait for the teacher to give you a second chance.');
     }
-    
     this.nextWord();
   },
 
   nextWord() {
     this.currentWordIndex++;
     if (this.currentWordIndex >= this.words.length) {
-      // Check if all exercises are complete
+      this.completedExercises[this.currentStage][this.currentExercise] = true;
       const completed = this.completedExercises[this.currentStage];
-      const allDone = completed && completed.match && completed.jumble && completed.fill && completed.meaning;
-      
+      const allDone = completed.match && completed.jumble && completed.fill && completed.meaning;
       if (allDone) {
         fetch('/api/stage/' + this.currentStage + '/submit', { method: 'POST' });
         alert('Stage complete! Submit for teacher assessment.');
-      } else {
-        alert('Exercise complete! You can continue with other exercises.');
       }
       this.showDashboard();
     } else {
@@ -528,9 +528,18 @@ const App = {
     return arr;
   },
 
+  escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  },
+
   async showAdminDashboard() {
     const res = await fetch('/api/admin/students');
     const students = await res.json();
+    this.adminStudents = students;
     
     document.getElementById('app').innerHTML = `
       <div class="header">
@@ -564,8 +573,8 @@ const App = {
             </div>
             
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-              ${s.progress.map(p => p.status === 'submitted' 
-                ? `<button class="btn btn-cyan" style="font-size: 11px; padding: 7px 16px;" onclick="App.unlockStage(${s.id}, ${p.stage})">UNLOCK STAGE ${p.stage + 1}</button>` 
+              ${s.progress.map(p => p.status === 'submitted'
+                ? `<button class="btn btn-cyan" style="font-size: 11px; padding: 7px 16px;" onclick="App.approveStage(${s.id}, ${p.stage})">APPROVE STAGE ${p.stage}</button>`
                 : ''
               ).join('')}
               <button class="btn btn-outline" style="font-size: 11px; padding: 7px 16px;" onclick="App.viewAnswers(${s.id})">VIEW ANSWERS</button>
@@ -589,6 +598,17 @@ const App = {
     this.showAdminDashboard();
   },
 
+  async approveStage(userId, stage) {
+    await fetch('/api/admin/approve-stage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, stage: stage })
+    });
+    this.viewingStudentId = null;
+    this.viewingStage = null;
+    this.showAdminDashboard();
+  },
+
   async resetStage(userId, stage) {
     if (confirm('Are you sure you want to reset this stage? This will delete all answers for this stage.')) {
       await fetch('/api/admin/reset', {
@@ -600,8 +620,107 @@ const App = {
     }
   },
 
-  async viewAnswers(userId) {
-    alert('Answers view coming soon');
+  async viewAnswers(userId, stage = null) {
+    const student = this.adminStudents.find(s => s.id === userId);
+    if (!student) {
+      alert('Student not found');
+      return;
+    }
+
+    const availableStages = student.progress.filter(p => p.status !== 'locked');
+    const defaultStage = stage || (this.viewingStudentId === userId && this.viewingStage
+      ? this.viewingStage
+      : (availableStages.find(p => p.status === 'submitted')?.stage || availableStages[0]?.stage || 1));
+
+    this.viewingStudentId = userId;
+    this.viewingStage = defaultStage;
+
+    const res = await fetch(`/api/admin/answers/${userId}/${defaultStage}`);
+    this.adminAnswers = await res.json();
+    const stageProgress = student.progress.find(p => p.stage === this.viewingStage);
+    const stageStatus = stageProgress?.status || 'locked';
+
+    const stageButtons = availableStages.map(p => {
+      const active = p.stage === this.viewingStage ? 'btn-cyan' : 'btn-outline';
+      return `<button class="btn ${active}" style="font-size: 11px; padding: 7px 16px;" onclick="App.viewAnswers(${userId}, ${p.stage})">STAGE ${p.stage}</button>`;
+    }).join('');
+
+    document.getElementById('app').innerHTML = `
+      <div class="header">
+        <div class="logo">SPELLGRID</div>
+        <div class="user-info">
+          <span class="tag tag-pink">REVIEW</span>
+          <button class="btn btn-outline" onclick="App.showAdminDashboard()" style="padding: 6px 12px; font-size: 11px;">BACK</button>
+        </div>
+      </div>
+      <div class="container" style="padding-top: 32px;">
+        <div class="answers-header">
+          <div>
+            <div style="font-family: 'Share Tech Mono', monospace; font-size: 11px; color: var(--text-muted); letter-spacing: 2px; margin-bottom: 8px;">// ANSWER REVIEW</div>
+            <div class="student-name">${student.username.toUpperCase()}</div>
+          </div>
+          <div class="answers-stage-picker">${stageButtons}</div>
+        </div>
+
+        <div class="answers-toolbar">
+          ${stageStatus === 'submitted'
+            ? `<button class="btn btn-cyan" style="font-size: 11px; padding: 7px 16px;" onclick="App.approveStage(${userId}, ${this.viewingStage})">APPROVE STAGE ${this.viewingStage}</button>`
+            : stageStatus === 'approved'
+              ? `<span class="tag tag-green">STAGE ${this.viewingStage} APPROVED</span>`
+              : ''
+          }
+          <button class="btn btn-outline" style="font-size: 11px; padding: 7px 16px;" onclick="App.resetStage(${userId}, ${this.viewingStage})">RESET STAGE ${this.viewingStage}</button>
+        </div>
+
+        ${this.adminAnswers.length ? this.adminAnswers.map(answer => `
+          <div class="answer-card ${answer.is_correct ? 'answer-card-correct' : 'answer-card-wrong'}">
+            <div class="answer-card-top">
+              <div>
+                <div class="answer-word">${answer.word}</div>
+                <div class="answer-meta">${answer.exercise_type.toUpperCase()} · ${answer.submitted_at}</div>
+              </div>
+              <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                <span class="tag ${answer.is_correct ? 'tag-green' : 'tag-pink'}">${answer.is_correct ? 'CORRECT' : 'WRONG'}</span>
+                ${answer.teacher_override ? '<span class="tag tag-yellow">TEACHER OVERRIDE</span>' : ''}
+              </div>
+            </div>
+
+            <div class="answer-grid">
+              <div class="answer-panel">
+                <div class="label">WORD DEFINITION</div>
+                <div class="answer-text">${answer.definition}</div>
+              </div>
+              <div class="answer-panel">
+                <div class="label">STUDENT ANSWER</div>
+                <div class="answer-text">${answer.answer ? this.escapeHtml(answer.answer) : '<span style="color: var(--text-muted);">No answer</span>'}</div>
+              </div>
+            </div>
+
+            <div class="answer-actions">
+              <button class="btn btn-cyan" style="font-size: 11px; padding: 7px 16px;" onclick="App.overrideAnswer(${answer.id}, true)">MARK CORRECT</button>
+              <button class="btn" style="font-size: 11px; padding: 7px 16px; color: var(--cyber-pink); border: 1px solid rgba(255,45,120,0.3); background: transparent;" onclick="App.overrideAnswer(${answer.id}, false)">MARK WRONG</button>
+            </div>
+          </div>
+        `).join('') : `
+          <div class="student-card">
+            <div class="student-name">NO ANSWERS YET</div>
+            <div style="margin-top: 8px; color: var(--text-secondary);">This student has no recorded answers for stage ${this.viewingStage}.</div>
+          </div>
+        `}
+      </div>
+    `;
+  },
+
+  async overrideAnswer(answerId, isCorrect) {
+    if (!this.viewingStudentId || !this.viewingStage) return;
+
+    await fetch('/api/admin/override', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answer_id: answerId, is_correct: isCorrect })
+    });
+
+    this.viewAnswers(this.viewingStudentId, this.viewingStage);
   }
 };
 
