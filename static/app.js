@@ -307,14 +307,17 @@ const App = {
     const word = this.words[this.currentWordIndex];
     const letters = word.word.split('');
     
-    // Hide first letter and ~30% of remaining
+    // Hide exactly 50% of letters (rounded up), always including the first
     const hidden = new Array(letters.length).fill(false);
     hidden[0] = true;
-    for (let i = 1; i < letters.length; i++) {
-      if (Math.random() < 0.3) {
-        hidden[i] = true;
-      }
+    const totalToHide = Math.ceil(letters.length * 0.5);
+    const remaining = Array.from({length: letters.length - 1}, (_, i) => i + 1);
+    // Shuffle remaining indices and pick enough to reach totalToHide
+    for (let i = remaining.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [remaining[i], remaining[j]] = [remaining[j], remaining[i]];
     }
+    remaining.slice(0, totalToHide - 1).forEach(i => { hidden[i] = true; });
     
     document.getElementById('app').innerHTML = `
       <div class="header">
