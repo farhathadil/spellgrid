@@ -6,6 +6,8 @@ const App = {
   currentExercise: null,
   currentWordIndex: 0,
   words: [],
+  wordAssignments: {},
+  exerciseWords: [],
   completedExercises: {}, // Track which exercises are done per stage
   jumbleLetters: [],
   answerLetters: [],
@@ -169,7 +171,9 @@ const App = {
       fetch(`/api/stage/${stage}/words`),
       fetch(`/api/stage/${stage}/exercise-status`)
     ]);
-    this.words = await wordsRes.json();
+    const wordsData = await wordsRes.json();
+    this.words = wordsData.words;
+    this.wordAssignments = wordsData.assignments || {};
     const status = await statusRes.json();
     this.completedExercises[stage] = status;
     this.showDashboard();
@@ -185,6 +189,14 @@ const App = {
     this.wordResults = [];
     this.wordAttempts = [];
 
+    // Use only the 5 words assigned to this exercise type
+    if (this.wordAssignments[type] && this.wordAssignments[type].length > 0) {
+      const assignedIds = new Set(this.wordAssignments[type]);
+      this.exerciseWords = this.words.filter(w => assignedIds.has(w.id));
+    } else {
+      this.exerciseWords = [...this.words];
+    }
+
     if (type === 'jumble') {
       this.initJumble();
     } else if (type === 'fill') {
@@ -197,7 +209,7 @@ const App = {
   },
 
   initJumble() {
-    const word = this.words[this.currentWordIndex];
+    const word = this.exerciseWords[this.currentWordIndex];
     const letters = word.word.toLowerCase().split('');
     this.jumbleLetters = this.shuffleArray(letters);
     this.answerLetters = new Array(letters.length).fill(null);
@@ -205,7 +217,7 @@ const App = {
   },
 
   renderJumble() {
-    const word = this.words[this.currentWordIndex];
+    const word = this.exerciseWords[this.currentWordIndex];
     document.getElementById('app').innerHTML = `
       <div class="header">
         <div class="logo">SPELLGRID</div>
@@ -213,9 +225,9 @@ const App = {
       </div>
       <div class="container" style="padding-top: 32px;">
         <div class="exercise-header">
-          <div class="exercise-label">// JUMBLE · ${this.currentWordIndex + 1} OF ${this.words.length}</div>
+          <div class="exercise-label">// JUMBLE · ${this.currentWordIndex + 1} OF ${this.exerciseWords.length}</div>
           <div class="progress-dots">
-            ${this.words.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? (this.wordResults[i] ? 'var(--cyber-green)' : 'var(--cyber-pink)') : i === this.currentWordIndex ? 'var(--cyber-pink)' : 'var(--cyber-border)'}"></div>`).join('')}
+            ${this.exerciseWords.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? (this.wordResults[i] ? 'var(--cyber-green)' : 'var(--cyber-pink)') : i === this.currentWordIndex ? 'var(--cyber-pink)' : 'var(--cyber-border)'}"></div>`).join('')}
           </div>
         </div>
         
@@ -268,7 +280,7 @@ const App = {
 
   async checkJumble() {
     const answer = this.answerLetters.join('');
-    const word = this.words[this.currentWordIndex];
+    const word = this.exerciseWords[this.currentWordIndex];
     
     const res = await fetch('/api/answers', {
       method: 'POST',
@@ -304,9 +316,9 @@ const App = {
   },
 
   renderFill() {
-    const word = this.words[this.currentWordIndex];
+    const word = this.exerciseWords[this.currentWordIndex];
     const letters = word.word.split('');
-    
+
     // Hide exactly 50% of letters (rounded up), always including the first
     const hidden = new Array(letters.length).fill(false);
     hidden[0] = true;
@@ -318,7 +330,7 @@ const App = {
       [remaining[i], remaining[j]] = [remaining[j], remaining[i]];
     }
     remaining.slice(0, totalToHide - 1).forEach(i => { hidden[i] = true; });
-    
+
     document.getElementById('app').innerHTML = `
       <div class="header">
         <div class="logo">SPELLGRID</div>
@@ -326,9 +338,9 @@ const App = {
       </div>
       <div class="container" style="padding-top: 32px;">
         <div class="exercise-header">
-          <div class="exercise-label">// FILL LETTERS · ${this.currentWordIndex + 1} OF ${this.words.length}</div>
+          <div class="exercise-label">// FILL LETTERS · ${this.currentWordIndex + 1} OF ${this.exerciseWords.length}</div>
           <div class="progress-dots">
-            ${this.words.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? (this.wordResults[i] ? 'var(--cyber-green)' : 'var(--cyber-pink)') : i === this.currentWordIndex ? 'var(--cyber-purple)' : 'var(--cyber-border)'}"></div>`).join('')}
+            ${this.exerciseWords.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? (this.wordResults[i] ? 'var(--cyber-green)' : 'var(--cyber-pink)') : i === this.currentWordIndex ? 'var(--cyber-purple)' : 'var(--cyber-border)'}"></div>`).join('')}
           </div>
         </div>
         
@@ -357,7 +369,7 @@ const App = {
 
   async checkFill() {
     const inputs = document.querySelectorAll('.fill-input');
-    const word = this.words[this.currentWordIndex];
+    const word = this.exerciseWords[this.currentWordIndex];
     const letters = word.word.split('');
     
     let answer = [...letters];
@@ -399,11 +411,17 @@ const App = {
     if (this.currentWordIndex === 0) {
       this.matchCorrectCount = 0;
     }
+    // Build shuffled options once per word (correct + 3 distractors from full word pool)
+    const word = this.exerciseWords[this.currentWordIndex];
+    const distractors = this.shuffleArray(
+      this.words.filter(w => w.id !== word.id).map(w => w.definition)
+    ).slice(0, 4);
+    this.matchOptions = this.shuffleArray([word.definition, ...distractors]);
     this.renderMatch();
   },
 
   renderMatch() {
-    const word = this.words[this.currentWordIndex];
+    const word = this.exerciseWords[this.currentWordIndex];
     document.getElementById('app').innerHTML = `
       <div class="header">
         <div class="logo">SPELLGRID</div>
@@ -411,37 +429,42 @@ const App = {
       </div>
       <div class="container" style="padding-top: 32px;">
         <div class="exercise-header">
-          <div class="exercise-label">// MATCH MEANING · ${this.currentWordIndex + 1} OF ${this.words.length}</div>
+          <div class="exercise-label">// MATCH MEANING · ${this.currentWordIndex + 1} OF ${this.exerciseWords.length}</div>
           <div class="progress-dots">
-            ${this.words.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? (this.wordResults[i] ? 'var(--cyber-green)' : 'var(--cyber-pink)') : i === this.currentWordIndex ? 'var(--cyber-cyan)' : 'var(--cyber-border)'}"></div>`).join('')}
+            ${this.exerciseWords.map((_, i) => `<div class="progress-dot" style="background: ${i < this.currentWordIndex ? (this.wordResults[i] ? 'var(--cyber-green)' : 'var(--cyber-pink)') : i === this.currentWordIndex ? 'var(--cyber-cyan)' : 'var(--cyber-border)'}"></div>`).join('')}
           </div>
         </div>
 
-        <div style="text-align: center; margin: 24px 0;">
-          <div style="font-family: 'Rajdhani', sans-serif; font-size: 32px; font-weight: 700; color: var(--cyber-cyan); margin-bottom: 32px;">${word.word.toUpperCase()}</div>
-
-          <div style="max-width: 600px; margin: 0 auto;">
-            <label class="label">TYPE THE EXACT MEANING</label>
-            <textarea class="meaning-textarea" id="matchAnswer" placeholder="Type the meaning exactly as it appears..."></textarea>
-          </div>
+        <div style="text-align: center; margin: 24px 0 16px;">
+          <div style="font-family: 'Rajdhani', sans-serif; font-size: 32px; font-weight: 700; color: var(--cyber-cyan);">${word.word.toUpperCase()}</div>
         </div>
 
-        <div style="display: flex; justify-content: center; gap: 12px; margin-top: 24px;">
-          <button class="btn btn-outline" onclick="App.renderMatch()">CLEAR</button>
-          <button class="btn btn-cyan" onclick="App.checkMatch()">SUBMIT →</button>
+        <div style="max-width: 600px; margin: 0 auto;">
+          <div class="label" style="margin-bottom: 12px;">SELECT THE CORRECT MEANING</div>
+          ${this.matchOptions.map((def, i) => `
+            <div onclick="App.selectMatch(${i})" style="
+              border: 1px solid var(--cyber-border);
+              border-radius: 6px;
+              padding: 14px 16px;
+              margin-bottom: 10px;
+              cursor: pointer;
+              font-size: 13px;
+              color: var(--text-primary);
+              line-height: 1.5;
+              transition: border-color 0.15s, background 0.15s;
+            " onmouseover="this.style.borderColor='var(--cyber-cyan)';this.style.background='rgba(0,212,255,0.05)'"
+               onmouseout="this.style.borderColor='var(--cyber-border)';this.style.background='transparent'">
+              <span style="font-family:'Share Tech Mono',monospace; font-size:11px; color:var(--cyber-cyan); margin-right:10px;">${String.fromCharCode(65 + i)}.</span>${this.escapeHtml(def)}
+            </div>
+          `).join('')}
         </div>
       </div>
     `;
   },
 
-  async checkMatch() {
-    const answer = document.getElementById('matchAnswer').value;
-    const word = this.words[this.currentWordIndex];
-
-    if (!answer.trim()) {
-      await this.showModal('Please enter an answer');
-      return;
-    }
+  async selectMatch(optionIndex) {
+    const def = this.matchOptions[optionIndex];
+    const word = this.exerciseWords[this.currentWordIndex];
 
     const res = await fetch('/api/answers', {
       method: 'POST',
@@ -449,7 +472,7 @@ const App = {
       body: JSON.stringify({
         word_id: word.id,
         exercise_type: 'match',
-        answer: answer
+        answer: def
       })
     });
 
@@ -476,7 +499,7 @@ const App = {
 
   initMeaning() {
     if (this.currentWordIndex === 0) {
-      this.meaningWords = this.shuffleArray([...this.words]);
+      this.meaningWords = this.shuffleArray([...this.exerciseWords]);
     }
     this.renderMeaning();
   },
@@ -553,9 +576,9 @@ const App = {
 
   async nextWord() {
     this.currentWordIndex++;
-    if (this.currentWordIndex >= this.words.length) {
+    if (this.currentWordIndex >= this.exerciseWords.length) {
       if (this.currentExercise === 'match') {
-        const total = this.words.length;
+        const total = this.exerciseWords.length;
         const pct = Math.round((this.matchCorrectCount / total) * 100);
         if (this.matchCorrectCount / total >= 0.8) {
           this.completedExercises[this.currentStage].match = { completed: true, correct: this.matchCorrectCount, total };
@@ -565,7 +588,7 @@ const App = {
         }
       } else {
         const correct = this.wordResults.filter(Boolean).length;
-        const total = this.currentExercise === 'meaning' ? this.meaningWords.length : this.words.length;
+        const total = this.currentExercise === 'meaning' ? this.meaningWords.length : this.exerciseWords.length;
         this.completedExercises[this.currentStage][this.currentExercise] = { completed: true, correct, total };
       }
       const completed = this.completedExercises[this.currentStage];

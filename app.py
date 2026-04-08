@@ -41,6 +41,9 @@ def migrate_db():
         db.execute("ALTER TABLE answers ADD COLUMN claude_score INTEGER")
     if 'claude_feedback' not in existing:
         db.execute("ALTER TABLE answers ADD COLUMN claude_feedback TEXT")
+    sp_existing = {row[1] for row in db.execute("PRAGMA table_info(stage_progress)").fetchall()}
+    if 'exercise_assignments' not in sp_existing:
+        db.execute("ALTER TABLE stage_progress ADD COLUMN exercise_assignments TEXT")
     db.commit()
 
 migrate_db()
@@ -229,7 +232,25 @@ def get_stage_words(stage_num):
         db.execute('UPDATE stage_progress SET word_order = ? WHERE user_id = ? AND stage = ?',
                   (json.dumps(word_ids), session['user_id'], stage_num))
         db.commit()
-    
+
+    # Generate exercise assignments (5 words each, no overlap) if not present
+    assignments_json = progress['exercise_assignments']
+    if not assignments_json:
+        shuffled = shuffle_array(word_ids)
+        ex_types = ['match', 'jumble', 'fill', 'meaning']
+        n = len(shuffled)
+        per = n // 4
+        assignments = {
+            ex_types[i]: shuffled[i * per: (i + 1) * per if i < 3 else n]
+            for i in range(4)
+        }
+        assignments_json = json.dumps(assignments)
+        db.execute('UPDATE stage_progress SET exercise_assignments = ? WHERE user_id = ? AND stage = ?',
+                  (assignments_json, session['user_id'], stage_num))
+        db.commit()
+    else:
+        assignments = json.loads(assignments_json)
+
     # Get words in the stored shuffle order
     placeholders = ','.join('?' * len(word_ids))
     rows = db.execute(
@@ -237,14 +258,17 @@ def get_stage_words(stage_num):
         tuple(word_ids)
     ).fetchall()
     order = {wid: i for i, wid in enumerate(word_ids)}
-    words = sorted(rows, key=lambda w: order[w['id']])
+    words_list = sorted(rows, key=lambda w: order[w['id']])
 
-    return jsonify([{
-        'id': w['id'],
-        'word': w['word'],
-        'definition': w['definition'],
-        'keywords': w['keywords'].split(',') if w['keywords'] else []
-    } for w in words])
+    return jsonify({
+        'words': [{
+            'id': w['id'],
+            'word': w['word'],
+            'definition': w['definition'],
+            'keywords': w['keywords'].split(',') if w['keywords'] else []
+        } for w in words_list],
+        'assignments': assignments
+    })
 
 @app.route('/api/stage/<int:stage_num>/exercise-status')
 def get_exercise_status(stage_num):
@@ -252,18 +276,35 @@ def get_exercise_status(stage_num):
         return jsonify({'error': 'Not logged in'}), 401
 
     db = get_db()
-    total = db.execute('SELECT COUNT(*) as count FROM words WHERE stage = ?', (stage_num,)).fetchone()['count']
+    progress = db.execute('SELECT * FROM stage_progress WHERE user_id = ? AND stage = ?',
+                         (session['user_id'], stage_num)).fetchone()
+    total_all = db.execute('SELECT COUNT(*) as count FROM words WHERE stage = ?', (stage_num,)).fetchone()['count']
+
+    assignments = None
+    if progress and progress['exercise_assignments']:
+        assignments = json.loads(progress['exercise_assignments'])
 
     status = {}
     for ex_type in ('match', 'jumble', 'fill', 'meaning'):
-        row = db.execute(
-            '''SELECT COUNT(DISTINCT word_id) as answered,
-                      SUM(is_correct) as correct
-               FROM answers
-               WHERE user_id = ? AND exercise_type = ?
-               AND word_id IN (SELECT id FROM words WHERE stage = ?)''',
-            (session['user_id'], ex_type, stage_num)
-        ).fetchone()
+        if assignments and ex_type in assignments:
+            ex_word_ids = assignments[ex_type]
+            total = len(ex_word_ids)
+            placeholders = ','.join('?' * len(ex_word_ids))
+            row = db.execute(
+                f'''SELECT COUNT(DISTINCT word_id) as answered, SUM(is_correct) as correct
+                   FROM answers
+                   WHERE user_id = ? AND exercise_type = ? AND word_id IN ({placeholders})''',
+                (session['user_id'], ex_type, *ex_word_ids)
+            ).fetchone()
+        else:
+            total = total_all
+            row = db.execute(
+                '''SELECT COUNT(DISTINCT word_id) as answered, SUM(is_correct) as correct
+                   FROM answers
+                   WHERE user_id = ? AND exercise_type = ?
+                   AND word_id IN (SELECT id FROM words WHERE stage = ?)''',
+                (session['user_id'], ex_type, stage_num)
+            ).fetchone()
         answered = row['answered'] or 0
         correct = int(row['correct'] or 0)
         status[ex_type] = {
@@ -492,8 +533,8 @@ def admin_reset():
     # Delete answers for this stage
     db.execute('DELETE FROM answers WHERE user_id = ? AND word_id IN (SELECT id FROM words WHERE stage = ?)',
               (user_id, stage))
-    # Reset progress
-    db.execute('UPDATE stage_progress SET status = "active", word_order = NULL WHERE user_id = ? AND stage = ?',
+    # Reset progress and clear word assignments so a fresh random split is generated on next load
+    db.execute('UPDATE stage_progress SET status = "active", word_order = NULL, exercise_assignments = NULL WHERE user_id = ? AND stage = ?',
               (user_id, stage))
     db.commit()
     
@@ -518,9 +559,9 @@ def admin_reset_exercise():
            AND word_id IN (SELECT id FROM words WHERE stage = ?)''',
         (user_id, exercise_type, stage)
     )
-    # If stage was submitted/approved, revert to active so student can redo this exercise
+    # Revert stage to active and clear exercise assignments so all exercises get fresh words on next load
     db.execute(
-        "UPDATE stage_progress SET status = 'active' WHERE user_id = ? AND stage = ? AND status != 'locked'",
+        "UPDATE stage_progress SET status = 'active', exercise_assignments = NULL WHERE user_id = ? AND stage = ? AND status != 'locked'",
         (user_id, stage)
     )
     db.commit()
