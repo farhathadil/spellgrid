@@ -7,6 +7,9 @@ import random
 import datetime
 import re
 import math
+import os
+import urllib.request
+import urllib.error
 from fuzzywuzzy import fuzz
 
 app = Flask(__name__)
@@ -15,10 +18,88 @@ app.config['SECRET_KEY'] = 'spellgrid_2026_hiriya_school'
 app.config['SESSION_PERMANENT'] = False
 Session(app)
 
+# Load .env file manually (no python-dotenv dependency)
+_env_path = os.path.join(os.path.dirname(__file__), '.env')
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _k, _v = _line.split('=', 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
+
 def get_db():
     db = sqlite3.connect('spellgrid.db')
     db.row_factory = sqlite3.Row
     return db
+
+def migrate_db():
+    """Add columns introduced for Claude grading if they don't exist yet."""
+    db = get_db()
+    existing = {row[1] for row in db.execute("PRAGMA table_info(answers)").fetchall()}
+    if 'claude_score' not in existing:
+        db.execute("ALTER TABLE answers ADD COLUMN claude_score INTEGER")
+    if 'claude_feedback' not in existing:
+        db.execute("ALTER TABLE answers ADD COLUMN claude_feedback TEXT")
+    db.commit()
+
+migrate_db()
+
+def grade_meaning_with_claude(word, definition, student_answer):
+    """
+    Call Claude Haiku to semantically grade a student's meaning answer.
+    Returns (score, feedback) where score is 0/1/2, or raises on failure.
+    """
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+
+    system_prompt = f"""You are a vocabulary teacher grading a student's definition for the word "{word}".
+
+Official definition: {definition}
+
+Student's answer: {student_answer}
+
+Grade the student's answer on a scale of 0–2:
+- 2: The answer captures the core meaning correctly (does not need to be word-for-word).
+- 1: The answer is partially correct — it touches on the meaning but is incomplete or slightly off.
+- 0: The answer is incorrect or unrelated to the word's meaning.
+
+Respond with a JSON object only, no other text. Example:
+{{"score": 2, "feedback": "Great — you captured the meaning accurately."}}"""
+
+    payload = json.dumps({
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 200,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": "Grade this answer."}]
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=payload,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        method="POST"
+    )
+
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        body = json.loads(resp.read())
+
+    text = body["content"][0]["text"].strip()
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text)
+    result = json.loads(text)
+    score = int(result["score"])
+    feedback = str(result.get("feedback", ""))
+    if score not in (0, 1, 2):
+        raise ValueError(f"Unexpected score: {score}")
+    return score, feedback
 
 # Fisher-Yates shuffle
 def shuffle_array(arr):
@@ -223,7 +304,9 @@ def submit_answer():
     
     is_correct = False
     answer_normalized = answer.strip()
-    
+    claude_score = None
+    claude_feedback = None
+
     if exercise_type == 'match':
         # Student must type the definition exactly (case-insensitive, whitespace-normalised)
         expected = ' '.join(word['definition'].lower().split())
@@ -234,43 +317,35 @@ def submit_answer():
     elif exercise_type == 'fill':
         is_correct = (answer_normalized.lower() == word['word'].lower())
     elif exercise_type == 'meaning':
-        # Grade against the curated stored keywords first, then fall back to the definition text.
-        definition = word['definition'].lower()
-        answer_lower = answer_normalized.lower()
-
-        answer_keywords = extract_keywords(answer_lower)
-        expected_keywords = extract_keywords(word['keywords'] or '')
-        if not expected_keywords:
-            expected_keywords = extract_keywords(definition)
-
-        keyword_matches = len(answer_keywords & expected_keywords)
-        # Require 80% of expected keywords — ceil ensures short definitions
-        # (e.g. "Extremely angry" = 2 keywords) need all keywords, not just one.
-        required_matches = max(1, math.ceil(len(expected_keywords) * 0.8))
-
-        # Only apply fuzzy phrase matching if the answer has at least 2 meaningful keywords,
-        # preventing single letters/stopword-only answers from matching via partial_ratio.
-        phrase_match = (
-            len(answer_keywords) >= 2 and (
-                fuzz.token_set_ratio(answer_lower, definition) >= 85 or
-                fuzz.partial_ratio(answer_lower, definition) >= 85
+        try:
+            claude_score, claude_feedback = grade_meaning_with_claude(
+                word['word'], word['definition'], answer_normalized
             )
-        )
+            is_correct = (claude_score == 2)
+        except Exception:
+            # Fallback: mark pending (NULL is_correct) for teacher review
+            is_correct = None
 
-        is_correct = keyword_matches >= required_matches or phrase_match
-    
     # Insert answer
-    db.execute('''INSERT INTO answers (user_id, word_id, exercise_type, answer, is_correct)
-                 VALUES (?, ?, ?, ?, ?)''',
-              (session['user_id'], word_id, exercise_type, answer_normalized, is_correct))
+    db.execute(
+        '''INSERT INTO answers (user_id, word_id, exercise_type, answer, is_correct, claude_score, claude_feedback)
+           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        (session['user_id'], word_id, exercise_type, answer_normalized, is_correct, claude_score, claude_feedback)
+    )
     db.commit()
-    
-    return jsonify({
+
+    response = {
         'success': True,
         'is_correct': is_correct,
         'correct_answer': word['word'] if exercise_type != 'meaning' else None,
         'definition': word['definition']
-    })
+    }
+    if exercise_type == 'meaning':
+        response['claude_feedback'] = claude_feedback
+        response['claude_score'] = claude_score
+        if is_correct is None:
+            response['pending'] = True
+    return jsonify(response)
 
 @app.route('/api/stage/<int:stage_num>/submit', methods=['POST'])
 def submit_stage(stage_num):
@@ -473,6 +548,8 @@ def admin_get_answers(user_id, stage):
         'answer': a['answer'],
         'is_correct': a['is_correct'],
         'teacher_override': a['teacher_override'],
+        'claude_score': a['claude_score'],
+        'claude_feedback': a['claude_feedback'],
         'submitted_at': a['submitted_at']
     } for a in answers])
 
